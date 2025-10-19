@@ -1,11 +1,10 @@
 import { Router } from 'express';
-import { generateProposal } from '../services/proposalService.js';
-import { generatePDF } from '../services/pdfService.js';
+import { generateProposal, ProposalResult } from '../services/proposalService.js';
 
 const router = Router();
 
-// Timeout configuration (10 seconds)
-const TIMEOUT_MS = 10000;
+// Timeout configuration (15 seconds)
+const TIMEOUT_MS = 15000;
 
 const timeout = (ms: number) => 
   new Promise((_, reject) => 
@@ -19,77 +18,86 @@ router.post('/generate', async (req, res) => {
     if (!idea || typeof idea !== 'string') {
       return res.status(400).json({ 
         success: false,
-        error: 'Valid project idea is required' 
+        error: 'Valid project idea is required',
+        userMessage: 'Please provide a project idea to generate a proposal.'
       });
     }
 
-    if (idea.length > 2000) {
+    if (idea.length > 4000) {
       return res.status(400).json({
         success: false,
-        error: 'Project idea too long. Please keep it under 2000 characters.'
+        error: 'Project idea too long',
+        userMessage: 'Please keep your project idea under 4000 characters.'
       });
     }
 
-    // Execute with timeout
-    const proposal = await Promise.race([
+    // Execute with timeout - explicitly type the result
+    const result: ProposalResult = await Promise.race([
       generateProposal(idea),
       timeout(TIMEOUT_MS)
-    ]);
+    ]) as ProposalResult;
 
-    res.json({
-      success: true,
-      data: proposal
-    });
+    // Structure the response properly
+    const response = {
+      success: true, // Always true since we always return a proposal
+      data: result.proposal,
+      source: result.source,
+      ...(result.error && {
+        error: {
+          type: result.error.type,
+          message: result.error.userMessage,
+          retryable: result.error.retryable,
+          technicalDetails: result.error.message
+        }
+      })
+    };
+
+    res.json(response);
+
   } catch (error: any) {
-    console.error('Error in /generate:', error);
+    console.error('Error in /generate route:', error);
     
     if (error.message === 'Request timeout') {
       return res.status(408).json({
         success: false,
-        error: 'Request timeout. Please try again.'
+        error: {
+          type: 'TIMEOUT_ERROR',
+          message: 'The request took too long to process.',
+          retryable: true,
+          technicalDetails: 'Request timeout after 15 seconds'
+        },
+        userMessage: 'The request took too long. Please try again.'
       });
     }
+
+    // Fallback for any unexpected errors
+    const fallbackProposal = {
+      title: 'Project Proposal',
+      objective: 'We encountered an unexpected error while generating your proposal. Please try again with your project idea.',
+      features: [
+        'Error handling and recovery systems',
+        'User-friendly error messaging',
+        'Robust fallback mechanisms'
+      ],
+      targetAudience: 'Users experiencing technical difficulties',
+      considerations: [
+        'System stability and error recovery',
+        'User experience during service interruptions',
+        'Communication of technical issues'
+      ]
+    };
 
     res.status(500).json({
       success: false,
-      error: 'Failed to generate proposal. Please try again.'
-    });
-  }
-});
-
-router.post('/generate-pdf', async (req, res) => {
-  try {
-    const { proposal } = req.body;
-    
-    if (!proposal || !proposal.title) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Valid proposal data is required' 
-      });
-    }
-
-    // Execute with timeout
-    const pdfBuffer = await Promise.race([
-      generatePDF(proposal),
-      timeout(TIMEOUT_MS)
-    ]);
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${proposal.title.replace(/[^a-z0-9]/gi, '_')}.pdf"`);
-    res.send(pdfBuffer);
-  } catch (error: any) {
-    console.error('Error in /generate-pdf:', error);
-    
-    if (error.message === 'Request timeout') {
-      return res.status(408).json({
-        success: false,
-        error: 'PDF generation timeout. Please try again.'
-      });
-    }
-
-    res.status(500).json({
-      success: false,
-      error: 'Failed to generate PDF. Please try again.'
+      data: fallbackProposal,
+      source: 'fallback',
+      error: {
+        type: 'UNEXPECTED_ERROR',
+        message: 'An unexpected error occurred in the server.',
+        retryable: true,
+        technicalDetails: error.message
+      },
+      userMessage: 'An unexpected error occurred. Showing a basic proposal template.'
     });
   }
 });
